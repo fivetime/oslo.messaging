@@ -807,10 +807,10 @@ class AMQPDriverBase(base.BaseDriver):
         conn.declare_topic_consumer(exchange_name=self._get_exchange(target),
                                     topic=target.topic,
                                     callback=listener)
-        conn.declare_topic_consumer(exchange_name=self._get_exchange(target),
-                                    topic='{}.{}'.format(target.topic,
-                                                         target.server),
-                                    callback=listener)
+        conn.declare_server_consumer(exchange_name=self._get_exchange(target),
+                                     topic='{}.{}'.format(target.topic,
+                                                          target.server),
+                                     callback=listener)
         conn.declare_fanout_consumer(target.topic, listener)
 
         return base.PollStyleListenerAdapter(listener, batch_size,

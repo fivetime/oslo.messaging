@@ -1,0 +1,24 @@
+---
+features:
+  - |
+    A new ``[oslo_messaging_rabbit] rabbit_server_queues_ttl`` option sets a
+    queue TTL (``x-expires``) on the queue each RPC server declares for the
+    messages addressed to it alone, ``<topic>.<server>``. Such a queue is
+    deleted once it has been unused for the duration of the TTL. It defaults
+    to 0, which keeps these queues without a TTL as before.
+fixes:
+  - |
+    RPC servers whose names do not outlive the process, such as Kubernetes
+    pods named afresh on every rollout, left their ``<topic>.<server>``
+    queues behind each time they were replaced, since nothing deletes them.
+    With ``rabbit_quorum_queue`` those queues are durable, so they also
+    outlast broker restarts and accumulate indefinitely. Setting
+    ``rabbit_server_queues_ttl`` lets RabbitMQ remove them.
+upgrade:
+  - |
+    RabbitMQ refuses to declare an existing queue with an ``x-expires`` that
+    differs from the one it was created with. When
+    ``rabbit_server_queues_ttl`` is set or changed and a server finds its
+    queue already declared with another TTL, or none, it now logs a warning
+    and uses the queue with its existing arguments instead of failing to
+    start. Delete the queue for it to be declared with the new TTL.

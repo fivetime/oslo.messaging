@@ -222,6 +222,25 @@ rabbit_opts = [
                     'will be discarded from it once reaching TTL '
                     'Setting to 0 will disable x-max-age for stream which '
                     'make stream grow indefinitely filling up the diskspace'),
+    cfg.IntOpt('rabbit_server_queues_ttl',
+               min=0,
+               default=0,
+               help='Positive integer representing duration in seconds for '
+                    'queue TTL (x-expires) of the queue each RPC server '
+                    'declares for the messages addressed to it alone, named '
+                    'after the topic and the server (<topic>.<server>). '
+                    'Such a queue is deleted once it has been unused for the '
+                    'duration of the TTL. Set it where server names do not '
+                    'outlive the process, as with Kubernetes pods named '
+                    'afresh on every rollout: each new name declares a new '
+                    'queue and nothing deletes the old one, and with '
+                    'rabbit_quorum_queue those queues are durable and '
+                    'outlast broker restarts as well. Messages sent to a '
+                    'server that stays away longer than the TTL are lost '
+                    'with its queue. A queue that already exists with '
+                    'another TTL, or none, keeps its original arguments. '
+                    'Setting 0 as value, the default, will disable the '
+                    'x-expires.'),
     cfg.IntOpt('rabbit_qos_prefetch_count',
                default=0,
                help='Specifies the number of messages to prefetch. Setting to '
@@ -444,6 +463,27 @@ class Consumer:
         )
         self.queue.declare()
 
+    def _declare_fallback_existing(self, conn, consumer_arguments):
+        """Fallback by binding to the queue as it already exists.
+
+        RabbitMQ refuses with PRECONDITION_FAILED a declare whose x-expires
+        differs from the one the queue was created with, in either
+        direction. A passive declare only checks that the queue exists, so
+        the queue keeps its arguments and is bound as usual.
+        """
+        self.queue = kombu.entity.Queue(
+            name=self.queue_name,
+            channel=conn.channel,
+            exchange=self.exchange,
+            durable=self.durable,
+            auto_delete=self.queue_auto_delete,
+            routing_key=self.routing_key,
+            queue_arguments=self.queue_arguments,
+            consumer_arguments=consumer_arguments
+        )
+        self.queue.queue_declare(passive=True)
+        self.queue.queue_bind()
+
     def reset_stream_offset(self):
         if not self.rabbit_stream_fanout:
             return
@@ -498,6 +538,20 @@ class Consumer:
                                 conn.connection_id, self.queue_name, err)
                     self._declare_fallback_nondurable(
                         err, conn, consumer_arguments)
+                elif ("PRECONDITION_FAILED - inequivalent arg 'x-expires'"
+                        in str(err)):
+                    # NOTE(fivetime): The queue already exists with a
+                    # different TTL, typically one declared before
+                    # rabbit_server_queues_ttl was set or changed, by a
+                    # server whose name does not change between restarts.
+                    # RabbitMQ does not let a declare change the arguments
+                    # of an existing queue, so use it as it is rather than
+                    # fail to start; it only takes the new TTL once it is
+                    # deleted.
+                    LOG.warning('[%s] Queue %s already exists with a '
+                                'different TTL, keeping its arguments: %s',
+                                conn.connection_id, self.queue_name, err)
+                    self._declare_fallback_existing(conn, consumer_arguments)
                 else:
                     raise
             except amqp_ex.NotFound as ex:
@@ -717,6 +771,7 @@ class Connection:
         self.rabbit_transient_quorum_queue = \
             driver_conf.rabbit_transient_quorum_queue
         self.rabbit_stream_fanout = driver_conf.rabbit_stream_fanout
+        self.rabbit_server_queues_ttl = driver_conf.rabbit_server_queues_ttl
         self.rabbit_transient_queues_ttl = \
             driver_conf.rabbit_transient_queues_ttl
         self.rabbit_qos_prefetch_count = driver_conf.rabbit_qos_prefetch_count
@@ -1454,7 +1509,7 @@ class Connection:
         self.declare_consumer(consumer)
 
     def declare_topic_consumer(self, exchange_name, topic, callback=None,
-                               queue_name=None):
+                               queue_name=None, rabbit_queue_ttl=0):
         """Create a 'topic' consumer."""
         consumer = Consumer(
             exchange_name=exchange_name,
@@ -1467,10 +1522,21 @@ class Connection:
             callback=callback,
             rabbit_ha_queues=self.rabbit_ha_queues,
             enable_cancel_on_failover=self.enable_cancel_on_failover,
+            rabbit_queue_ttl=rabbit_queue_ttl,
             rabbit_quorum_queue=self.rabbit_quorum_queue,
             rabbit_quorum_queue_config=self.rabbit_quorum_queue_config)
 
         self.declare_consumer(consumer)
+
+    def declare_server_consumer(self, exchange_name, topic, callback):
+        """Create the 'topic' consumer of a single RPC server.
+
+        Its queue, <topic>.<server>, receives the messages addressed to that
+        server alone, so it expires after rabbit_server_queues_ttl when set.
+        """
+        self.declare_topic_consumer(
+            exchange_name=exchange_name, topic=topic, callback=callback,
+            rabbit_queue_ttl=self.rabbit_server_queues_ttl)
 
     def declare_fanout_consumer(self, topic, callback):
         """Create a 'fanout' consumer."""
