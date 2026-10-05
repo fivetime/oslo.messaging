@@ -958,6 +958,18 @@ class AMQPDriverBase(base.BaseDriver):
             listener, batch_size, batch_timeout
         )
 
+    def delete_rpc_server_queues(self, target, retry=None):
+        # The queues listen() declares: the topic's, and the server's. Fanout
+        # queues are left to expire (rabbit_transient_queues_ttl).
+        queues = [target.topic]
+        if target.server:
+            queues.append(f'{target.topic}.{target.server}')
+        with self._get_connection(
+            rpc_common.PURPOSE_SEND, retry=retry
+        ) as conn:
+            for name in queues:
+                conn.delete_queue(name, retry=retry)
+
     def listen_for_notifications(
         self, targets_and_priorities, pool, batch_size, batch_timeout
     ):

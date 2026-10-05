@@ -134,7 +134,12 @@ from oslo_messaging.rpc import dispatcher as rpc_dispatcher
 from oslo_messaging import server as msg_server
 from oslo_messaging import transport as msg_transport
 
-__all__ = ['get_rpc_server', 'expected_exceptions', 'expose']
+__all__ = [
+    'get_rpc_server',
+    'delete_rpc_server_queues',
+    'expected_exceptions',
+    'expose',
+]
 
 LOG = logging.getLogger(__name__)
 
@@ -270,6 +275,35 @@ def get_rpc_server(
         endpoints, serializer, access_policy
     )
     return server_cls(transport, target, dispatcher, executor)
+
+
+def delete_rpc_server_queues(transport, target, retry=None):
+    """Delete what the RPC servers of a target consume from.
+
+    Remove from the messaging backend the queue the servers of
+    ``target.topic`` share and, if ``target.server`` is set, the one of that
+    server, with any messages left in them. Their fanout queues expire on
+    their own once unused.
+
+    Use it for a topic that will not be used again, such as one named after a
+    resource that has been deleted: a backend like RabbitMQ keeps these
+    queues after their consumers are gone, so without it they stay forever.
+    Stop the servers first; a server still running declares its queues again
+    when it reconnects. Do not use it on a topic other servers still share.
+
+    A driver that keeps no such state does nothing.
+
+    :param transport: the messaging transport
+    :type transport: Transport
+    :param target: the topic and, optionally, the server
+    :type target: Target
+    :param retry: an optional default connection retries configuration:
+                  None or -1 means to retry forever.
+                  0 means no retry is attempted.
+                  N means attempt at most N retries.
+    :type retry: int
+    """
+    transport._delete_rpc_server_queues(target, retry=retry)
 
 
 def expected_exceptions(*exceptions):

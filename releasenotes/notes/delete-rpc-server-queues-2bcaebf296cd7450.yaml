@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    A new ``oslo_messaging.rpc.delete_rpc_server_queues(transport, target)``
+    function deletes the queue the RPC servers of ``target.topic`` share and,
+    if ``target.server`` is set, that server's queue, with any messages left
+    in them. The RabbitMQ driver supports this operation. It is meant for a
+    topic that will not be used again, such as one named after a resource
+    that has been deleted: RabbitMQ keeps those queues once their consumers
+    are gone, so applications that use a topic per resource left two queues
+    behind for each resource they deleted. Drivers that keep no such state do
+    nothing.
