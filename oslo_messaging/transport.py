@@ -153,6 +153,13 @@ class Transport:
             targets_and_priorities, pool, batch_size, batch_timeout
         )
 
+    def _delete_rpc_server_queues(self, target, retry=None):
+        if not target.topic:
+            raise exceptions.InvalidTarget(
+                'A topic is required to delete queues', target
+            )
+        self._driver.delete_rpc_server_queues(target, retry=retry)
+
     def cleanup(self):
         """Release all resources associated with this transport."""
         self._driver.cleanup()

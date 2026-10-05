@@ -20,6 +20,7 @@ from stevedore import driver
 import testscenarios
 
 import oslo_messaging
+from oslo_messaging._drivers import base
 from oslo_messaging.tests import utils as test_utils
 from oslo_messaging import transport
 
@@ -288,6 +289,38 @@ class TestTransportMethodArgs(test_utils.BaseTestCase):
         t._listen(self._target, 1, None)
 
         t._driver.listen.assert_called_once_with(self._target, 1, None)
+
+    def test_delete_rpc_server_queues(self):
+        t = transport.Transport(_FakeDriver(cfg.CONF))
+
+        t._driver.delete_rpc_server_queues = mock.Mock()
+
+        oslo_messaging.delete_rpc_server_queues(t, self._target, retry=3)
+
+        t._driver.delete_rpc_server_queues.assert_called_once_with(
+            self._target, retry=3
+        )
+
+    def test_delete_rpc_server_queues_needs_topic(self):
+        t = transport.Transport(_FakeDriver(cfg.CONF))
+
+        t._driver.delete_rpc_server_queues = mock.Mock()
+
+        self.assertRaises(
+            oslo_messaging.InvalidTarget,
+            oslo_messaging.delete_rpc_server_queues,
+            t,
+            oslo_messaging.Target(server='server'),
+        )
+        t._driver.delete_rpc_server_queues.assert_not_called()
+
+    def test_delete_rpc_server_queues_default_is_noop(self):
+        # A driver that keeps no queues does not have to implement it.
+        driver = mock.Mock(spec=base.BaseDriver)
+        self.assertIsNone(
+            base.BaseDriver.delete_rpc_server_queues(driver, self._target)
+        )
+        self.assertEqual([], driver.mock_calls)
 
 
 class TestTransportUrlCustomisation(test_utils.BaseTestCase):
