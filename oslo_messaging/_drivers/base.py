@@ -590,6 +590,29 @@ class BaseDriver(metaclass=abc.ABCMeta):
         :raises: :py:exc:`MessagingException`, :py:exc:`NotImplementedError`
         """
 
+    def delete_rpc_server_queues(self, target, retry=None):
+        """Delete what the RPC servers of a target consume from.
+
+        Remove from the messaging backend the queue the servers of
+        *target.topic* share and, if *target.server* is set, the one of that
+        server, with any messages left in them. This is for a topic that will
+        not be used again, such as one named after a resource that has been
+        deleted: a queue the backend keeps after its consumers are gone would
+        otherwise stay forever.
+
+        Drivers that keep no such state need not implement it: by default
+        this does nothing.
+
+        :param target: the topic and, optionally, the server
+        :type target: Target
+        :param retry: an optional default connection retries configuration:
+                      None or -1 means to retry forever.
+                      0 means no retry is attempted.
+                      N means attempt at most N retries.
+        :type retry: int
+        :raises: :py:exc:`MessagingException`
+        """
+
     @abc.abstractmethod
     def cleanup(self):
         """Release all resources used by the driver.  This method must block

@@ -1760,6 +1760,28 @@ class Connection:
         with self._connection_lock:
             self.ensure(method, retry=retry, error_callback=_error_callback)
 
+    def delete_queue(self, queue_name, retry=None):
+        """Delete a queue, discarding any messages left in it."""
+
+        def _error_callback(exc):
+            LOG.error(
+                "Failed to delete queue '%(queue)s': %(err_str)s",
+                {'queue': queue_name, 'err_str': exc},
+            )
+            LOG.debug('Exception', exc_info=exc)
+
+        def _delete():
+            LOG.debug('[%s] Queue.delete: %s', self.connection_id, queue_name)
+            try:
+                self.channel.queue_delete(queue=queue_name)
+            except amqp_ex.NotFound:
+                # Already gone. RabbitMQ answers delete-ok for a missing
+                # queue, but the AMQP 0-9-1 specification has it raise 404.
+                pass
+
+        with self._connection_lock:
+            self.ensure(_delete, retry=retry, error_callback=_error_callback)
+
     def _get_connection_info(self, conn_error=False):
         # Bug #1745166: set 'conn_error' true if this is being called when the
         # connection is in a known error state.  Otherwise attempting to access

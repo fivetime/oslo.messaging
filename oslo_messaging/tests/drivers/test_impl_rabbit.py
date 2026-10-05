@@ -174,6 +174,49 @@ class TestRabbitDriverLoad(test_utils.BaseTestCase):
         )
 
 
+class TestRabbitDeleteServerQueues(test_utils.BaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.messaging_conf.transport_url = 'kombu+memory:/'
+        transport = oslo_messaging.get_transport(self.conf)
+        self.addCleanup(transport.cleanup)
+        self.driver = transport._driver
+        self.conn = mock.Mock()
+        context = mock.MagicMock()
+        context.__enter__.return_value = self.conn
+        self.get_connection = mock.patch.object(
+            self.driver, '_get_connection', return_value=context
+        ).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _deleted(self):
+        return [call.args[0] for call in self.conn.delete_queue.call_args_list]
+
+    def test_topic_and_server_queues(self):
+        self.conn.rabbit_stream_fanout = False
+        self.driver.delete_rpc_server_queues(
+            oslo_messaging.Target(topic='t', server='s'), retry=3
+        )
+        self.get_connection.assert_called_once_with(
+            driver_common.PURPOSE_SEND, retry=3
+        )
+        self.assertEqual(['t', 't.s'], self._deleted())
+        self.conn.delete_queue.assert_called_with('t.s', retry=3)
+
+    def test_topic_only(self):
+        self.conn.rabbit_stream_fanout = False
+        self.driver.delete_rpc_server_queues(oslo_messaging.Target(topic='t'))
+        self.assertEqual(['t'], self._deleted())
+
+    def test_fanout_stream(self):
+        # A stream does not expire like a fanout queue: it goes too.
+        self.conn.rabbit_stream_fanout = True
+        self.driver.delete_rpc_server_queues(
+            oslo_messaging.Target(topic='t', server='s')
+        )
+        self.assertEqual(['t', 't.s', 't_fanout'], self._deleted())
+
+
 class TestRabbitDriverLoadSSL(test_utils.BaseTestCase):
     scenarios = [
         ('no_ssl', dict(options=dict(), expected=False)),
@@ -672,6 +715,99 @@ class TestRabbitConsume(test_utils.BaseTestCase):
                 # _heartbeat_check is only called when timeout raised,
                 # otherwise it is unnecessary as the connection is alive.
                 mock_hb.assert_called()
+
+
+class TestRabbitDeleteRPCServerQueues(test_utils.BaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.transport = oslo_messaging.get_rpc_transport(
+            self.conf, 'kombu+memory://'
+        )
+        self.addCleanup(self.transport.cleanup)
+        # The memory transport keeps its queues for the whole process, so
+        # give each test a topic of its own.
+        self.topic = self.id().rsplit('.', 1)[-1]
+
+    def _queues(self):
+        names = {
+            self.topic,
+            f'{self.topic}.server',
+            f'{self.topic}.other',
+        }
+        with self.transport._driver._get_connection(
+            driver_common.PURPOSE_SEND
+        ) as conn:
+            channel = conn.connection.channel
+            return {name for name in names if channel._has_queue(name)}
+
+    def _listen(self, server):
+        target = oslo_messaging.Target(topic=self.topic, server=server)
+        self.transport._driver.listen(target, None, None)
+
+    def test_delete_topic_and_server_queues(self):
+        self._listen('server')
+        self._listen('other')
+        self.assertEqual(
+            {self.topic, f'{self.topic}.server', f'{self.topic}.other'},
+            self._queues(),
+        )
+
+        oslo_messaging.delete_rpc_server_queues(
+            self.transport, oslo_messaging.Target(topic=self.topic)
+        )
+
+        self.assertEqual(
+            {f'{self.topic}.server', f'{self.topic}.other'}, self._queues()
+        )
+
+        oslo_messaging.delete_rpc_server_queues(
+            self.transport,
+            oslo_messaging.Target(topic=self.topic, server='server'),
+        )
+
+        # The other server's queue is not this target's.
+        self.assertEqual({f'{self.topic}.other'}, self._queues())
+
+    def test_delete_topic_queue_only(self):
+        self._listen('server')
+        self.assertEqual({self.topic, f'{self.topic}.server'}, self._queues())
+
+        oslo_messaging.delete_rpc_server_queues(
+            self.transport, oslo_messaging.Target(topic=self.topic)
+        )
+
+        self.assertEqual({f'{self.topic}.server'}, self._queues())
+
+    def test_delete_repeated_queues(self):
+        target = oslo_messaging.Target(topic=self.topic, server='server')
+        self._listen('server')
+        self.assertEqual({self.topic, f'{self.topic}.server'}, self._queues())
+
+        oslo_messaging.delete_rpc_server_queues(self.transport, target)
+        self.assertEqual(set(), self._queues())
+
+        oslo_messaging.delete_rpc_server_queues(self.transport, target)
+        self.assertEqual(set(), self._queues())
+
+    def test_delete_never_declared_queues(self):
+        target = oslo_messaging.Target(topic=self.topic, server='server')
+
+        oslo_messaging.delete_rpc_server_queues(self.transport, target)
+        self.assertEqual(set(), self._queues())
+
+    def test_delete_queue_not_found(self):
+        with (
+            self.transport._driver._get_connection(
+                driver_common.PURPOSE_SEND
+            ) as conn,
+            mock.patch.object(
+                conn.connection.channel,
+                'queue_delete',
+                side_effect=amqp_ex.NotFound('NOT_FOUND - no queue'),
+            ) as queue_delete,
+        ):
+            conn.delete_queue(f'{self.topic}.server')
+        queue_delete.assert_called_once_with(queue=f'{self.topic}.server')
 
 
 class TestRabbitTransportURL(test_utils.BaseTestCase):
