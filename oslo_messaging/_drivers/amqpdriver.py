@@ -947,7 +947,7 @@ class AMQPDriverBase(base.BaseDriver):
             topic=target.topic,
             callback=listener,
         )
-        conn.declare_topic_consumer(
+        conn.declare_server_consumer(
             exchange_name=self._get_exchange(target),
             topic=f'{target.topic}.{target.server}',
             callback=listener,

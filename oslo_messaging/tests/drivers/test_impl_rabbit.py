@@ -674,6 +674,118 @@ class TestRabbitConsume(test_utils.BaseTestCase):
                 mock_hb.assert_called()
 
 
+class TestRabbitServerQueueTTL(test_utils.BaseTestCase):
+    def _listen_queue_arguments(self, **opts):
+        if opts:
+            self.config(group='oslo_messaging_rabbit', **opts)
+        transport = oslo_messaging.get_transport(self.conf, 'kombu+memory://')
+        self.addCleanup(transport.cleanup)
+        # The memory transport keeps its exchanges for the whole process,
+        # so give each test its own: quorum queues make it durable.
+        target = oslo_messaging.Target(
+            exchange=self.id(), topic='topic', server='server'
+        )
+        listener = transport._driver.listen(target, None, None)
+        return {
+            consumer.queue_name: consumer.queue_arguments
+            for consumer in listener._poll_style_listener.conn._consumers
+        }
+
+    def test_server_queue_has_no_ttl_by_default(self):
+        args = self._listen_queue_arguments()
+        self.assertNotIn('x-expires', args['topic'])
+        self.assertNotIn('x-expires', args['topic.server'])
+
+    def test_server_queue_ttl(self):
+        args = self._listen_queue_arguments(rabbit_server_queues_ttl=600)
+        self.assertEqual(600000, args['topic.server']['x-expires'])
+        # The queue the servers of a topic share must not expire.
+        self.assertNotIn('x-expires', args['topic'])
+        fanout = [q for q in args if q.startswith('topic_fanout_')]
+        self.assertEqual(1, len(fanout))
+        self.assertEqual(1800000, args[fanout[0]]['x-expires'])
+
+    def test_server_queue_ttl_with_quorum_queues(self):
+        args = self._listen_queue_arguments(
+            rabbit_server_queues_ttl=600, rabbit_quorum_queue=True
+        )
+        self.assertEqual(
+            {'x-queue-type': 'quorum', 'x-expires': 600000},
+            args['topic.server'],
+        )
+        self.assertEqual({'x-queue-type': 'quorum'}, args['topic'])
+
+    def test_notification_queues_have_no_ttl(self):
+        self.config(
+            group='oslo_messaging_rabbit', rabbit_server_queues_ttl=600
+        )
+        transport = oslo_messaging.get_notification_transport(
+            self.conf, 'kombu+memory://'
+        )
+        self.addCleanup(transport.cleanup)
+        listener = transport._driver.listen_for_notifications(
+            [(oslo_messaging.Target(topic='notifications'), 'info')],
+            None,
+            None,
+            None,
+        )
+        for consumer in listener._poll_style_listener.conn._consumers:
+            self.assertNotIn('x-expires', consumer.queue_arguments)
+
+
+class TestRabbitDeclareExistingQueue(test_utils.BaseTestCase):
+    def _consumer(self):
+        return rabbit_driver.Consumer(
+            exchange_name='exchange',
+            queue_name='topic.server',
+            routing_key='topic.server',
+            type='topic',
+            durable=True,
+            exchange_auto_delete=False,
+            queue_auto_delete=False,
+            callback=lambda msg: True,
+            rabbit_queue_ttl=600,
+            rabbit_quorum_queue=True,
+        )
+
+    def _declare(self, error):
+        transport = oslo_messaging.get_transport(self.conf, 'kombu+memory://')
+        self.addCleanup(transport.cleanup)
+        consumer = self._consumer()
+        with (
+            transport._driver._get_connection(
+                driver_common.PURPOSE_LISTEN
+            ) as conn,
+            mock.patch('kombu.Queue.declare', side_effect=error) as declare,
+            mock.patch('kombu.Queue.queue_declare') as queue_declare,
+            mock.patch('kombu.Queue.queue_bind') as queue_bind,
+        ):
+            consumer.declare(conn.connection)
+        return consumer, declare, queue_declare, queue_bind
+
+    def test_declare_queue_with_another_ttl(self):
+        consumer, declare, queue_declare, queue_bind = self._declare(
+            amqp_ex.PreconditionFailed(
+                "PRECONDITION_FAILED - inequivalent arg 'x-expires' for "
+                "queue 'topic.server' in vhost '/': received the value "
+                "'600000' of type 'signedint' but current is none"
+            )
+        )
+        self.assertEqual(1, declare.call_count)
+        queue_declare.assert_called_once_with(passive=True)
+        queue_bind.assert_called_once_with()
+        self.assertEqual('topic.server', consumer.queue.name)
+
+    def test_declare_queue_other_precondition_failed(self):
+        self.assertRaises(
+            amqp_ex.PreconditionFailed,
+            self._declare,
+            amqp_ex.PreconditionFailed(
+                "PRECONDITION_FAILED - inequivalent arg 'x-queue-type'"
+            ),
+        )
+
+
 class TestRabbitTransportURL(test_utils.BaseTestCase):
     scenarios = [
         (
