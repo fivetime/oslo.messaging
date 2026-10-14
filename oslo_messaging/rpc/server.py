@@ -262,8 +262,9 @@ def delete_rpc_server_queues(transport, target, retry=None):
 
     Remove from the messaging backend the queue the servers of
     ``target.topic`` share and, if ``target.server`` is set, the one of that
-    server, with any messages left in them. Their fanout queues expire on
-    their own once unused.
+    server, with any messages left in them, and the topic's fanout stream
+    where fanout queues are streams (``rabbit_stream_fanout``); an ordinary
+    fanout queue expires on its own once unused, a stream does not.
 
     Use it for a topic that will not be used again, such as one named after a
     resource that has been deleted: a backend like RabbitMQ keeps these

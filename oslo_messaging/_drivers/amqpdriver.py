@@ -817,13 +817,17 @@ class AMQPDriverBase(base.BaseDriver):
                                              batch_timeout)
 
     def delete_rpc_server_queues(self, target, retry=None):
-        # The queues listen() declares: the topic's, and the server's. Fanout
-        # queues are left to expire (rabbit_transient_queues_ttl).
+        # The queues listen() declares: the topic's, the server's and, when
+        # fanout queues are streams, the topic's fanout stream. An ordinary
+        # fanout queue expires on its own (rabbit_transient_queues_ttl); a
+        # stream does not, its x-max-age only trims its messages.
         queues = [target.topic]
         if target.server:
             queues.append(f'{target.topic}.{target.server}')
         with self._get_connection(rpc_common.PURPOSE_SEND,
                                   retry=retry) as conn:
+            if getattr(conn, 'rabbit_stream_fanout', False):
+                queues.append(f'{target.topic}_fanout')
             for name in queues:
                 conn.delete_queue(name, retry=retry)
 

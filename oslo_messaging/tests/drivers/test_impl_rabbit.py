@@ -155,6 +155,49 @@ class TestRabbitDriverLoad(test_utils.BaseTestCase):
             "to conn_pool_min_size: 2", str(error))
 
 
+class TestRabbitDeleteServerQueues(test_utils.BaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.messaging_conf.transport_url = 'kombu+memory:/'
+        transport = oslo_messaging.get_transport(self.conf)
+        self.addCleanup(transport.cleanup)
+        self.driver = transport._driver
+        self.conn = mock.Mock()
+        context = mock.MagicMock()
+        context.__enter__.return_value = self.conn
+        self.get_connection = mock.patch.object(
+            self.driver, '_get_connection', return_value=context
+        ).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _deleted(self):
+        return [call.args[0] for call in self.conn.delete_queue.call_args_list]
+
+    def test_topic_and_server_queues(self):
+        self.conn.rabbit_stream_fanout = False
+        self.driver.delete_rpc_server_queues(
+            oslo_messaging.Target(topic='t', server='s'), retry=3
+        )
+        self.get_connection.assert_called_once_with(
+            driver_common.PURPOSE_SEND, retry=3
+        )
+        self.assertEqual(['t', 't.s'], self._deleted())
+        self.conn.delete_queue.assert_called_with('t.s', retry=3)
+
+    def test_topic_only(self):
+        self.conn.rabbit_stream_fanout = False
+        self.driver.delete_rpc_server_queues(oslo_messaging.Target(topic='t'))
+        self.assertEqual(['t'], self._deleted())
+
+    def test_fanout_stream(self):
+        # A stream does not expire like a fanout queue: it goes too.
+        self.conn.rabbit_stream_fanout = True
+        self.driver.delete_rpc_server_queues(
+            oslo_messaging.Target(topic='t', server='s')
+        )
+        self.assertEqual(['t', 't.s', 't_fanout'], self._deleted())
+
+
 class TestRabbitDriverLoadSSL(test_utils.BaseTestCase):
     scenarios = [
         ('no_ssl', dict(options=dict(), expected=False)),
