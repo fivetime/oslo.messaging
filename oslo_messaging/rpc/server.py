@@ -123,12 +123,15 @@ A simple example of an RPC server with multiple endpoints might be::
 
 """
 
+from collections.abc import Callable
 import functools
 import logging
 import sys
 import time
+from typing import ParamSpec, TypeVar
 
 import debtcollector
+
 from oslo_messaging import _tracing as tracing
 from oslo_messaging import exceptions
 from oslo_messaging.rpc import dispatcher as rpc_dispatcher
@@ -287,7 +290,13 @@ def get_rpc_server(
     return server_cls(transport, target, dispatcher, executor)
 
 
-def expected_exceptions(*exceptions):
+P = ParamSpec('P')
+R = TypeVar('R')
+
+
+def expected_exceptions(
+    *exceptions: type[BaseException],
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator for RPC endpoint methods that raise expected exceptions.
 
     Marking an endpoint method with this decorator allows the declaration
@@ -299,9 +308,9 @@ def expected_exceptions(*exceptions):
     client will see the original exception type.
     """
 
-    def outer(func):
+    def outer(func: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(func)
-        def inner(*args, **kwargs):
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
             try:
                 return func(*args, **kwargs)
             # Take advantage of the fact that we can catch
@@ -318,7 +327,10 @@ def expected_exceptions(*exceptions):
     return outer
 
 
-def expose(func):
+F = TypeVar('F', bound=Callable[..., object])
+
+
+def expose(func: F) -> F:
     """Decorator for RPC endpoint methods that are exposed to the RPC client.
 
     If the dispatcher's access_policy is set to ExplicitRPCAccessPolicy then
@@ -335,7 +347,5 @@ def expose(func):
             pass
 
     """
-
-    func.exposed = True
-
+    setattr(func, 'exposed', True)
     return func
