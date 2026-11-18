@@ -123,6 +123,7 @@ A simple example of an RPC server with multiple endpoints might be::
 
 """
 
+import functools
 import logging
 import sys
 import time
@@ -299,6 +300,7 @@ def expected_exceptions(*exceptions):
     """
 
     def outer(func):
+        @functools.wraps(func)
         def inner(*args, **kwargs):
             try:
                 return func(*args, **kwargs)

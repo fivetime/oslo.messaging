@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    The ``expected_exceptions`` decorator now preserves the wrapped RPC
+    endpoint method's metadata and signature for introspection.
