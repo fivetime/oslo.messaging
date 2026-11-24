@@ -118,6 +118,50 @@ class TestRabbitQos(test_utils.BaseTestCase):
         self.connection_with(prefetch=1, purpose=driver_common.PURPOSE_SEND)
         fake_basic_qos.assert_not_called()
 
+    def _consume_with(self, consume_side_effect, declare_side_effect=None):
+        """Consume from a topic, returning the calls made in order."""
+        self.config(rabbit_qos_prefetch_count=1, group="oslo_messaging_rabbit")
+        transport = oslo_messaging.get_transport(self.conf, 'kombu+memory://')
+        self.addCleanup(transport.cleanup)
+        calls = mock.Mock()
+        with transport._driver._get_connection(
+            driver_common.PURPOSE_LISTEN
+        ) as conn:
+            with (
+                mock.patch(
+                    'kombu.transport.memory.Channel.basic_qos',
+                    calls.basic_qos,
+                ),
+                mock.patch('kombu.Queue.consume', calls.consume),
+                mock.patch('kombu.Queue.declare', calls.declare),
+            ):
+                calls.consume.side_effect = consume_side_effect
+                calls.declare.side_effect = declare_side_effect
+                conn.declare_topic_consumer(
+                    exchange_name='test',
+                    topic='test',
+                    callback=lambda msg: True,
+                )
+                conn.connection.connection.recoverable_connection_errors = ()
+                conn.connection.connection.recoverable_channel_errors = ()
+                conn.connection.connection.drain_events = mock.Mock()
+                conn.consume()
+        return [c[0] for c in calls.mock_calls]
+
+    def test_qos_sent_before_consume(self):
+        calls = self._consume_with([None])
+        self.assertEqual('basic_qos', calls[calls.index('consume') - 1])
+
+    def test_qos_sent_again_after_channel_error_on_consume(self):
+        # RabbitMQ closes the channel on a channel error and py-amqp opens
+        # it again as the same channel, without the QoS it had. A stream
+        # queue then refuses the consumer: "consumer prefetch count is not
+        # set for stream queue".
+        calls = self._consume_with([amqp_ex.NotFound, None])
+        consumes = [i for i, c in enumerate(calls) if c == 'consume']
+        self.assertEqual(2, len(consumes))
+        self.assertIn('basic_qos', calls[consumes[0] + 1 : consumes[1]])
+
 
 class TestRabbitDriverLoad(test_utils.BaseTestCase):
 

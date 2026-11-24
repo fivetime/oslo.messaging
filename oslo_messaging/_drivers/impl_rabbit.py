@@ -623,6 +623,15 @@ class Consumer:
         if conn.channel != self._declared_on:
             self.declare(conn)
         try:
+            # NOTE(fivetime): The prefetch count is set here, right before
+            # the consumer is registered, and not only when the connection
+            # switches to a new channel: a channel error, during a declare
+            # as well as here, makes RabbitMQ close the channel and the
+            # amqp library open it again as the same channel object, with
+            # none of the QoS it had. Most queues then deliver without
+            # limit, and a stream queue refuses the consumer altogether
+            # ("consumer prefetch count is not set").
+            conn._set_qos(conn.channel)
             self.queue.consume(callback=self._callback,
                                consumer_tag=str(tag),
                                nowait=self.nowait)
@@ -643,6 +652,7 @@ class Consumer:
             if exc.code == 404 or (exc.code == 406 and
                                    exc.method_name == 'Basic.ack'):
                 self.declare(conn)
+                conn._set_qos(conn.channel)
                 self.queue.consume(callback=self._callback,
                                    consumer_tag=str(tag),
                                    nowait=self.nowait)

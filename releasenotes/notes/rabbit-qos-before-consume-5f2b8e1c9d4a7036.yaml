@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    The RabbitMQ driver now sets the prefetch count
+    (``rabbit_qos_prefetch_count``) on the channel right before it
+    registers each consumer. A channel error, such as a declare refused
+    with ``PRECONDITION_FAILED``, makes RabbitMQ close the channel and the
+    amqp library open it again as the same channel, without its QoS. The
+    consumers registered afterwards had no prefetch limit, and with
+    ``rabbit_stream_fanout`` the stream fanout queue refused them with
+    ``consumer prefetch count is not set``, so the RPC server never
+    consumed again.
